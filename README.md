@@ -15,11 +15,7 @@ It is a minimal local agent loop with:
 - transcript and memory persistence
 - bounded delegation
 
-The model backend is currently based on Ollama.
-
-<img src="https://sebastianraschka.com/images/github/mini-coding-agent/1.webp" width="500px">
-
-<br>
+The model backend uses an OpenAI-compatible chat completions API.
 
 **Stay tuned for a more detailed tutorial to be linked here**
 
@@ -30,45 +26,31 @@ The model backend is currently based on Ollama.
 You need:
 
 - Python 3.10+
-- Ollama installed
-- an Ollama model pulled locally
+- an OpenAI-compatible API server running locally
+- a model available from that server
 
 Optional:
 
 - `uv` for environment management and the `mini-coding-agent` CLI entry point
 
-This project has no Python runtime dependency beyond the standard library, so you can run it directly with `python mini_coding_agent.py` if you do not want to use `uv`.
+This project has no Python runtime dependency beyond the standard library, but the recommended workflow is `uv`.
 
 &nbsp;
-## Install Ollama
+## Start a Local API
 
-Install Ollama on your machine so the `ollama` command is available in your shell.
+Start an OpenAI-compatible API server that exposes chat completions at:
 
-Official installation link: [ollama.com/download](https://ollama.com/download)
-
-Then verify:
-
-```bash
-ollama --help
+```text
+http://127.0.0.1:8080/v1/chat/completions
 ```
 
-Start the server:
+The CLI uses this base URL by default:
 
-```bash
-ollama serve
+```text
+http://127.0.0.1:8080/v1
 ```
 
-In another terminal, pull a model. Example:
-
-```bash
-ollama pull qwen3.5:4b
-```
-
-Qwen 3.5 model library:
-
-- [ollama.com/library/qwen3.5](https://ollama.com/library/qwen3.5)
-
-The default in this project is `qwen3.5:4b`. If you have sufficient memory, it is worth trying a larger model such as `qwen3.5:9b` or another larger Qwen 3.5 variant. The agent just sends prompts to Ollama's `/api/generate` endpoint.
+If your server requires a specific model id, pass it with `--model` or set `OPENAI_MODEL`.
 
 &nbsp;
 ## Project Setup
@@ -99,17 +81,17 @@ cd mini-coding-agent
 uv run mini-coding-agent
 ```
 
-Without `uv`, run the script directly:
-
-```bash
-cd mini-coding-agent
-python mini_coding_agent.py
-```
-
 By default it uses:
 
-- model: `qwen3.5:4b`
+- host: `http://127.0.0.1:8080/v1`
+- model: `local-model`
 - approval: `ask`
+
+For servers that require a model id:
+
+```bash
+uv run mini-coding-agent --model "your-model-id"
+```
 
 For a concrete usage example, see [EXAMPLE.md](EXAMPLE.md).
 
@@ -182,12 +164,6 @@ being sent to the model as a normal task.
 uv run mini-coding-agent --help
 ```
 
-Without `uv`:
-
-```bash
-python mini_coding_agent.py --help
-```
-
 CLI flags are passed before the agent starts. Use them to choose the workspace,
 model connection, resume behavior, approval mode, and generation limits.
 
@@ -196,11 +172,13 @@ Important flags:
 - `--cwd`
   sets the workspace directory the agent should inspect and modify; default: `.`
 - `--model`
-  selects the Ollama model name, such as `qwen3.5:4b`; default: `qwen3.5:4b`
+  selects the model name; default: `OPENAI_MODEL` or `local-model`
 - `--host`
-  points the agent at the Ollama server URL (usually not needed); default: `http://127.0.0.1:11434`
-- `--ollama-timeout`
-  controls how long the client waits for an Ollama response (usually not needed); default: `300` seconds
+  points the agent at the OpenAI-compatible API base URL; default: `http://127.0.0.1:8080/v1`
+- `--timeout`
+  controls how long the client waits for an API response; default: `300` seconds
+- `--api-key`
+  sends a bearer token for APIs that require one; falls back to `OPENAI_API_KEY`
 - `--resume`
   resumes a saved session by id or uses `latest`; default: start a new session
 - `--approval`
@@ -223,6 +201,6 @@ See [EXAMPLE.md](EXAMPLE.md)
 ## Notes & Tips
 
 - The agent expects the model to emit either `<tool>...</tool>` or `<final>...</final>`.
-- Different Ollama models will follow those instructions with different reliability.
+- Different models will follow those instructions with different reliability.
 - If the model does not follow the format well, use a stronger instruction-following model.
 - The agent is intentionally small and optimized for readability, not robustness.

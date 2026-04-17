@@ -4,7 +4,7 @@ from unittest.mock import patch
 from mini_coding_agent import (
     FakeModelClient,
     MiniAgent,
-    OllamaModelClient,
+    OpenAICompatibleModelClient,
     SessionStore,
     WorkspaceContext,
     build_welcome,
@@ -203,7 +203,7 @@ def test_welcome_screen_keeps_box_shape_for_long_paths(tmp_path):
     deep.mkdir(parents=True)
     agent = build_agent(deep, [])
 
-    welcome = build_welcome(agent, model="qwen3.5:4b", host="http://127.0.0.1:11434")
+    welcome = build_welcome(agent, model="local-model", host="http://127.0.0.1:8080/v1")
     lines = welcome.splitlines()
 
     assert len(lines) >= 5
@@ -218,7 +218,7 @@ def test_welcome_screen_keeps_box_shape_for_long_paths(tmp_path):
     assert "commands: Commands:" not in welcome
 
 
-def test_ollama_client_posts_expected_payload():
+def test_openai_compatible_client_posts_expected_payload():
     captured = {}
 
     class FakeResponse:
@@ -229,31 +229,34 @@ def test_ollama_client_posts_expected_payload():
             return False
 
         def read(self):
-            return json.dumps({"response": "<final>ok</final>"}).encode("utf-8")
+            return json.dumps({"choices": [{"message": {"content": "<final>ok</final>"}}]}).encode("utf-8")
 
     def fake_urlopen(request, timeout):
         captured["url"] = request.full_url
         captured["timeout"] = timeout
+        captured["headers"] = dict(request.header_items())
         captured["body"] = json.loads(request.data.decode("utf-8"))
         return FakeResponse()
 
-    client = OllamaModelClient(
-        model="qwen3.5:4b",
-        host="http://127.0.0.1:11434",
+    client = OpenAICompatibleModelClient(
+        model="local-model",
+        host="http://127.0.0.1:8080/v1",
         temperature=0.2,
         top_p=0.9,
         timeout=30,
+        api_key="test-key",
     )
 
     with patch("urllib.request.urlopen", fake_urlopen):
         result = client.complete("hello", 42)
 
     assert result == "<final>ok</final>"
-    assert captured["url"] == "http://127.0.0.1:11434/api/generate"
+    assert captured["url"] == "http://127.0.0.1:8080/v1/chat/completions"
     assert captured["timeout"] == 30
-    assert captured["body"]["model"] == "qwen3.5:4b"
-    assert captured["body"]["prompt"] == "hello"
+    assert captured["headers"]["Authorization"] == "Bearer test-key"
+    assert captured["body"]["model"] == "local-model"
+    assert captured["body"]["messages"] == [{"role": "user", "content": "hello"}]
     assert captured["body"]["stream"] is False
-    assert captured["body"]["raw"] is False
-    assert captured["body"]["think"] is False
-    assert captured["body"]["options"]["num_predict"] == 42
+    assert captured["body"]["max_tokens"] == 42
+    assert captured["body"]["temperature"] == 0.2
+    assert captured["body"]["top_p"] == 0.9

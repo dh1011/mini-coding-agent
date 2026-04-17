@@ -180,31 +180,31 @@ class FakeModelClient:
         return self.outputs.pop(0)
 
 
-class OllamaModelClient:
-    def __init__(self, model, host, temperature, top_p, timeout):
+class OpenAICompatibleModelClient:
+    def __init__(self, model, host, temperature, top_p, timeout, api_key=""):
         self.model = model
         self.host = host.rstrip("/")
         self.temperature = temperature
         self.top_p = top_p
         self.timeout = timeout
+        self.api_key = api_key
 
     def complete(self, prompt, max_new_tokens):
         payload = {
             "model": self.model,
-            "prompt": prompt,
+            "messages": [{"role": "user", "content": prompt}],
             "stream": False,
-            "raw": False,
-            "think": False,
-            "options": {
-                "num_predict": max_new_tokens,
-                "temperature": self.temperature,
-                "top_p": self.top_p,
-            },
+            "max_tokens": max_new_tokens,
+            "temperature": self.temperature,
+            "top_p": self.top_p,
         }
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
         request = urllib.request.Request(
-            self.host + "/api/generate",
+            self.host + "/chat/completions",
             data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+            headers=headers,
             method="POST",
         )
         try:
@@ -212,18 +212,24 @@ class OllamaModelClient:
                 data = json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"Ollama request failed with HTTP {exc.code}: {body}") from exc
+            raise RuntimeError(f"OpenAI-compatible request failed with HTTP {exc.code}: {body}") from exc
         except urllib.error.URLError as exc:
             raise RuntimeError(
-                "Could not reach Ollama.\n"
-                "Make sure `ollama serve` is running and the model is available.\n"
+                "Could not reach the OpenAI-compatible API.\n"
+                "Make sure the server is running and the model is available.\n"
                 f"Host: {self.host}\n"
                 f"Model: {self.model}"
             ) from exc
 
         if data.get("error"):
-            raise RuntimeError(f"Ollama error: {data['error']}")
-        return data.get("response", "")
+            raise RuntimeError(f"OpenAI-compatible API error: {data['error']}")
+        choices = data.get("choices") or []
+        if not choices:
+            return ""
+        first = choices[0]
+        if "message" in first:
+            return first["message"].get("content") or ""
+        return first.get("text", "")
 
 
 class MiniAgent:
@@ -347,13 +353,13 @@ class MiniAgent:
                 '<tool>{"name":"read_file","args":{"path":"README.md","start":1,"end":80}}</tool>',
                 '<tool name="write_file" path="binary_search.py"><content>def binary_search(nums, target):\n    return -1\n</content></tool>',
                 '<tool name="patch_file" path="binary_search.py"><old_text>return -1</old_text><new_text>return mid</new_text></tool>',
-                '<tool>{"name":"run_shell","args":{"command":"uv run --with pytest python -m pytest -q","timeout":20}}</tool>',
+                '<tool>{"name":"run_shell","args":{"command":"uv run pytest -q","timeout":20}}</tool>',
                 "<final>Done.</final>",
             ]
         )
         return textwrap.dedent(
             f"""\
-            You are Mini-Coding-Agent, a small local coding agent running through Ollama.
+            You are Mini-Coding-Agent, a small local coding agent running through an OpenAI-compatible API.
 
             Rules:
             - Use tools instead of guessing about the workspace.
@@ -541,7 +547,7 @@ class MiniAgent:
             "list_files": '<tool>{"name":"list_files","args":{"path":"."}}</tool>',
             "read_file": '<tool>{"name":"read_file","args":{"path":"README.md","start":1,"end":80}}</tool>',
             "search": '<tool>{"name":"search","args":{"pattern":"binary_search","path":"."}}</tool>',
-            "run_shell": '<tool>{"name":"run_shell","args":{"command":"uv run --with pytest python -m pytest -q","timeout":20}}</tool>',
+            "run_shell": '<tool>{"name":"run_shell","args":{"command":"uv run pytest -q","timeout":20}}</tool>',
             "write_file": '<tool name="write_file" path="binary_search.py"><content>def binary_search(nums, target):\n    return -1\n</content></tool>',
             "patch_file": '<tool name="patch_file" path="binary_search.py"><old_text>return -1</old_text><new_text>return mid</new_text></tool>',
             "delegate": '<tool>{"name":"delegate","args":{"task":"inspect README.md","max_steps":3}}</tool>',
@@ -915,12 +921,13 @@ def build_welcome(agent, model, host):
 def build_agent(args):
     workspace = WorkspaceContext.build(args.cwd)
     store = SessionStore(Path(workspace.repo_root) / ".mini-coding-agent" / "sessions")
-    model = OllamaModelClient(
+    model = OpenAICompatibleModelClient(
         model=args.model,
         host=args.host,
         temperature=args.temperature,
         top_p=args.top_p,
-        timeout=args.ollama_timeout,
+        timeout=args.timeout,
+        api_key=args.api_key or os.environ.get("OPENAI_API_KEY", ""),
     )
     session_id = args.resume
     if session_id == "latest":
@@ -948,19 +955,20 @@ def build_agent(args):
 def build_arg_parser():
     parser = argparse.ArgumentParser(
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-        description="Minimal coding agent for Ollama models.",
+        description="Minimal coding agent for OpenAI-compatible chat completions APIs.",
     )
     parser.add_argument("prompt", nargs="*", help="Optional one-shot prompt.")
     parser.add_argument("--cwd", default=".", help="Workspace directory.")
-    parser.add_argument("--model", default="qwen3.5:4b", help="Ollama model name.")
-    parser.add_argument("--host", default="http://127.0.0.1:11434", help="Ollama server URL.")
-    parser.add_argument("--ollama-timeout", type=int, default=300, help="Ollama request timeout in seconds.")
+    parser.add_argument("--model", default=os.environ.get("OPENAI_MODEL", "local-model"), help="Model name.")
+    parser.add_argument("--host", default="http://127.0.0.1:8080/v1", help="OpenAI-compatible API base URL.")
+    parser.add_argument("--timeout", type=int, default=300, help="API request timeout in seconds.")
+    parser.add_argument("--api-key", default="", help="Bearer token for APIs that require one; falls back to OPENAI_API_KEY.")
     parser.add_argument("--resume", default=None, help="Session id to resume or 'latest'.")
     parser.add_argument("--approval", choices=("ask", "auto", "never"), default="ask", help="Approval policy for risky tools.")
     parser.add_argument("--max-steps", type=int, default=6, help="Maximum tool/model iterations per request.")
     parser.add_argument("--max-new-tokens", type=int, default=512, help="Maximum model output tokens per step.")
-    parser.add_argument("--temperature", type=float, default=0.2, help="Sampling temperature sent to Ollama.")
-    parser.add_argument("--top-p", type=float, default=0.9, help="Top-p sampling value sent to Ollama.")
+    parser.add_argument("--temperature", type=float, default=0.2, help="Sampling temperature sent to the model.")
+    parser.add_argument("--top-p", type=float, default=0.9, help="Top-p sampling value sent to the model.")
     return parser
 
 
